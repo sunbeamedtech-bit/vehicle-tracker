@@ -27,7 +27,7 @@
 <script>
 // ---- Fill these in from your ThingSpeak channel ----
 const CHANNEL_ID = "3489696";
-const READ_API_KEY = ""; // leave blank if the channel is public
+const READ_API_KEY = "QVUIJ617B0RMCIBW"; // leave as "" if the channel is public
 
 const map = L.map('map').setView([28.6139, 77.2090], 15);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -48,8 +48,8 @@ function makeIcon(course) {
 }
 
 function updateGPS() {
-  let url = `https://api.thingspeak.com/channels/${3489696}/feeds.json?results=1`;
-  if (QVUIJ617B0RMCIBW) url += `&api_key=${READ_API_KEY}`;
+  let url = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds.json?results=1`;
+  if (READ_API_KEY) url += `&api_key=${READ_API_KEY}`;
 
   fetch(url)
     .then(r => r.json())
