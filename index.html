@@ -47,6 +47,7 @@ if (typeof L === 'undefined') {
   let polyline = L.polyline([], {color: '#2b7cff', weight: 4, smoothFactor: 1}).addTo(map);
   let lastEntryId = null; // track which feeds we've already drawn, to avoid duplicate points
   let glideTimer = null;
+  let isFirstFetch = true; // on page load, only place the marker - don't draw old history into the trail
 
   function makeIcon(course) {
     return L.divIcon({
@@ -115,7 +116,9 @@ if (typeof L === 'undefined') {
           const course = parseFloat(feed.field4) || 0;
 
           if (!isNaN(lat) && !isNaN(lng)) {
-            polyline.addLatLng([lat, lng]);
+            if (!isFirstFetch) {
+              polyline.addLatLng([lat, lng]);
+            }
             lastValidLatLng = [lat, lng];
             lastValidCourse = course;
             lastValidSpeed = speed;
@@ -123,6 +126,12 @@ if (typeof L === 'undefined') {
           }
           lastEntryId = feed.entry_id;
         });
+
+        if (isFirstFetch && lastValidLatLng) {
+          // start the trail fresh from this session's first known position
+          polyline.addLatLng(lastValidLatLng);
+        }
+        isFirstFetch = false;
 
         if (lastValidLatLng) {
           glideMarkerTo(lastValidLatLng, lastValidCourse);
