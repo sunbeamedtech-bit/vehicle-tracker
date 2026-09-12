@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Live Vehicle Tracker</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   html,body{margin:0;height:100%;font-family:Arial, sans-serif}
   #info{text-align:center;font-size:18px;padding:10px;background:#222;color:#fff;
@@ -29,65 +29,71 @@
 const CHANNEL_ID = "3489696";
 const READ_API_KEY = "QVUIJ617B0RMCIBW"; // leave as "" if the channel is public
 
-const map = L.map('map').setView([28.6139, 77.2090], 15);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-  attribution: '&copy; OpenStreetMap contributors'
-}).addTo(map);
+document.getElementById('status').textContent = 'loading map...';
 
-let marker = null;
-let polyline = L.polyline([], {color: '#2b7cff'}).addTo(map);
+if (typeof L === 'undefined') {
+  document.getElementById('status').textContent = 'map library failed to load (check network/CDN block)';
+} else {
+  const map = L.map('map').setView([28.6139, 77.2090], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
 
-function makeIcon(course) {
-  return L.divIcon({
-    html: `<div class="arrow-icon" style="transform:rotate(${course}deg)">&#10148;</div>`,
-    className: '',
-    iconSize: [30, 30],
-    iconAnchor: [15, 15]
-  });
-}
+  let marker = null;
+  let polyline = L.polyline([], {color: '#2b7cff'}).addTo(map);
 
-function updateGPS() {
-  let url = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds.json?results=1`;
-  if (READ_API_KEY) url += `&api_key=${READ_API_KEY}`;
-
-  fetch(url)
-    .then(r => r.json())
-    .then(d => {
-      const feed = d.feeds && d.feeds[0];
-      if (!feed) { document.getElementById('status').textContent = 'no data yet'; return; }
-
-      const lat = parseFloat(feed.field1);
-      const lng = parseFloat(feed.field2);
-      const speed = parseFloat(feed.field3);
-      const course = parseFloat(feed.field4) || 0;
-
-      if (isNaN(lat) || isNaN(lng)) {
-        document.getElementById('status').textContent = 'waiting for GPS fix';
-        return;
-      }
-
-      const pos = [lat, lng];
-
-      if (marker == null) {
-        marker = L.marker(pos, {icon: makeIcon(course)}).addTo(map);
-        map.setView(pos, 17);
-      } else {
-        marker.setLatLng(pos);
-        marker.setIcon(makeIcon(course));
-      }
-
-      polyline.addLatLng(pos);
-      document.getElementById('speed').textContent = isNaN(speed) ? '--' : speed.toFixed(1);
-      document.getElementById('status').textContent = 'last update: ' + new Date(feed.created_at).toLocaleTimeString();
-    })
-    .catch(() => {
-      document.getElementById('status').textContent = 'connection error';
+  function makeIcon(course) {
+    return L.divIcon({
+      html: `<div class="arrow-icon" style="transform:rotate(${course}deg)">&#10148;</div>`,
+      className: '',
+      iconSize: [30, 30],
+      iconAnchor: [15, 15]
     });
-}
+  }
 
-setInterval(updateGPS, 5000);
-updateGPS();
+  function updateGPS() {
+    let url = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds.json?results=1`;
+    if (READ_API_KEY) url += `&api_key=${READ_API_KEY}`;
+
+    fetch(url)
+      .then(r => r.json())
+      .then(d => {
+        const feed = d.feeds && d.feeds[0];
+        if (!feed) { document.getElementById('status').textContent = 'no data yet'; return; }
+
+        const lat = parseFloat(feed.field1);
+        const lng = parseFloat(feed.field2);
+        const speed = parseFloat(feed.field3);
+        const course = parseFloat(feed.field4) || 0;
+
+        if (isNaN(lat) || isNaN(lng)) {
+          document.getElementById('status').textContent = 'waiting for GPS fix';
+          return;
+        }
+
+        const pos = [lat, lng];
+
+        if (marker == null) {
+          marker = L.marker(pos, {icon: makeIcon(course)}).addTo(map);
+          map.setView(pos, 17);
+        } else {
+          marker.setLatLng(pos);
+          marker.setIcon(makeIcon(course));
+        }
+
+        polyline.addLatLng(pos);
+        document.getElementById('speed').textContent = isNaN(speed) ? '--' : speed.toFixed(1);
+        document.getElementById('status').textContent = 'last update: ' + new Date(feed.created_at).toLocaleTimeString();
+      })
+      .catch((err) => {
+        document.getElementById('status').textContent = 'connection error: ' + err.message;
+      });
+  }
+
+  setInterval(updateGPS, 5000);
+  updateGPS();
+}
 </script>
 </body>
 </html>
