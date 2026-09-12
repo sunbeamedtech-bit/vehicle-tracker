@@ -28,6 +28,9 @@
 // ---- Fill these in from your ThingSpeak channel ----
 const CHANNEL_ID = "3489696";
 const READ_API_KEY = "QVUIJ617B0RMCIBW"; // leave as "" if the channel is public
+const RESULTS_PER_FETCH = 15;   // how many recent points to pull each time (fills gaps)
+const POLL_INTERVAL_MS = 15000; // match your device's send interval (ThingSpeak free tier min ~15s)
+const MARKER_GLIDE_MS = 800;    // smooth animation duration when marker moves
 
 document.getElementById('status').textContent = 'loading map...';
 
@@ -41,7 +44,9 @@ if (typeof L === 'undefined') {
   }).addTo(map);
 
   let marker = null;
-  let polyline = L.polyline([], {color: '#2b7cff'}).addTo(map);
+  let polyline = L.polyline([], {color: '#2b7cff', weight: 4, smoothFactor: 1}).addTo(map);
+  let lastEntryId = null; // track which feeds we've already drawn, to avoid duplicate points
+  let glideTimer = null;
 
   function makeIcon(course) {
     return L.divIcon({
@@ -52,46 +57,87 @@ if (typeof L === 'undefined') {
     });
   }
 
+  // Smoothly moves the marker from its current spot to a new one instead of jumping
+  function glideMarkerTo(newPos, course) {
+    if (marker == null) {
+      marker = L.marker(newPos, {icon: makeIcon(course)}).addTo(map);
+      map.setView(newPos, 17);
+      return;
+    }
+    marker.setIcon(makeIcon(course));
+
+    const startPos = marker.getLatLng();
+    const startTime = performance.now();
+
+    if (glideTimer) cancelAnimationFrame(glideTimer);
+
+    function step(now) {
+      const t = Math.min(1, (now - startTime) / MARKER_GLIDE_MS);
+      const lat = startPos.lat + (newPos[0] - startPos.lat) * t;
+      const lng = startPos.lng + (newPos[1] - startPos.lng) * t;
+      marker.setLatLng([lat, lng]);
+      if (t < 1) {
+        glideTimer = requestAnimationFrame(step);
+      }
+    }
+    glideTimer = requestAnimationFrame(step);
+  }
+
   function updateGPS() {
-    let url = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds.json?results=1`;
+    let url = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds.json?results=${RESULTS_PER_FETCH}`;
     if (READ_API_KEY) url += `&api_key=${READ_API_KEY}`;
 
     fetch(url)
       .then(r => r.json())
       .then(d => {
-        const feed = d.feeds && d.feeds[0];
-        if (!feed) { document.getElementById('status').textContent = 'no data yet'; return; }
+        const feeds = d.feeds || [];
+        if (feeds.length === 0) { document.getElementById('status').textContent = 'no data yet'; return; }
 
-        const lat = parseFloat(feed.field1);
-        const lng = parseFloat(feed.field2);
-        const speed = parseFloat(feed.field3);
-        const course = parseFloat(feed.field4) || 0;
-
-        if (isNaN(lat) || isNaN(lng)) {
-          document.getElementById('status').textContent = 'waiting for GPS fix';
+        // Only process feeds newer than the last one we already drew, in chronological order
+        let newFeeds = feeds;
+        if (lastEntryId !== null) {
+          newFeeds = feeds.filter(f => f.entry_id > lastEntryId);
+        }
+        if (newFeeds.length === 0) {
+          document.getElementById('status').textContent = 'up to date, waiting for next reading';
           return;
         }
 
-        const pos = [lat, lng];
+        let lastValidLatLng = null;
+        let lastValidCourse = 0;
+        let lastValidSpeed = null;
+        let lastValidTime = null;
 
-        if (marker == null) {
-          marker = L.marker(pos, {icon: makeIcon(course)}).addTo(map);
-          map.setView(pos, 17);
+        newFeeds.forEach(feed => {
+          const lat = parseFloat(feed.field1);
+          const lng = parseFloat(feed.field2);
+          const speed = parseFloat(feed.field3);
+          const course = parseFloat(feed.field4) || 0;
+
+          if (!isNaN(lat) && !isNaN(lng)) {
+            polyline.addLatLng([lat, lng]);
+            lastValidLatLng = [lat, lng];
+            lastValidCourse = course;
+            lastValidSpeed = speed;
+            lastValidTime = feed.created_at;
+          }
+          lastEntryId = feed.entry_id;
+        });
+
+        if (lastValidLatLng) {
+          glideMarkerTo(lastValidLatLng, lastValidCourse);
+          document.getElementById('speed').textContent = isNaN(lastValidSpeed) ? '--' : lastValidSpeed.toFixed(1);
+          document.getElementById('status').textContent = 'last update: ' + new Date(lastValidTime).toLocaleTimeString();
         } else {
-          marker.setLatLng(pos);
-          marker.setIcon(makeIcon(course));
+          document.getElementById('status').textContent = 'waiting for GPS fix';
         }
-
-        polyline.addLatLng(pos);
-        document.getElementById('speed').textContent = isNaN(speed) ? '--' : speed.toFixed(1);
-        document.getElementById('status').textContent = 'last update: ' + new Date(feed.created_at).toLocaleTimeString();
       })
       .catch((err) => {
         document.getElementById('status').textContent = 'connection error: ' + err.message;
       });
   }
 
-  setInterval(updateGPS, 5000);
+  setInterval(updateGPS, POLL_INTERVAL_MS);
   updateGPS();
 }
 </script>
