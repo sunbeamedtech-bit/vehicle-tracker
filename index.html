@@ -28,9 +28,9 @@
 // ---- Fill these in from your ThingSpeak channel ----
 const CHANNEL_ID = "3489696";
 const READ_API_KEY = "QVUIJ617B0RMCIBW"; // leave as "" if the channel is public
-const RESULTS_PER_FETCH = 15;   // how many recent points to pull each time (fills gaps)
-const POLL_INTERVAL_MS = 15000; // match your device's send interval (ThingSpeak free tier min ~15s)
-const MARKER_GLIDE_MS = 800;    // smooth animation duration when marker moves
+const RESULTS_PER_FETCH = 8;    // how many recent points to pull each time (fills gaps)
+const POLL_INTERVAL_MS = 3000;  // check for new data every 3s - picks up new entries as soon as they land
+const MARKER_GLIDE_MS = 400;    // smooth animation duration when marker moves (snappier)
 
 document.getElementById('status').textContent = 'loading map...';
 
