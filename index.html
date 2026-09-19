@@ -12,7 +12,7 @@
         display:flex;justify-content:space-around}
   #map{height:calc(100vh - 44px)}
   .arrow-icon{font-size:28px;display:inline-block;transform-origin:center center;
-              transition:transform 0.4s linear;}
+              transition:transform 0.4s linear;color:#e63946;text-shadow:0 0 3px rgba(0,0,0,0.4);}
   #status{font-size:13px;color:#aaa}
 </style>
 </head>
@@ -25,11 +25,9 @@
 <div id="map"></div>
 
 <script>
-// ---- Fill these in from your ThingSpeak channel ----
-const CHANNEL_ID = "3489696";
-const READ_API_KEY = "QVUIJ617B0RMCIBW"; // leave as "" if the channel is public
-const RESULTS_PER_FETCH = 8;    // how many recent points to pull each time (fills gaps)
-const POLL_INTERVAL_MS = 3000;  // check for new data every 3s - picks up new entries as soon as they land
+// ---- Firebase Realtime Database ----
+const FIREBASE_URL = "https://vehicle-tracker-c7cc6-default-rtdb.asia-southeast1.firebasedatabase.app";
+const FIREBASE_AUTH = ""; // leave "" if using test-mode rules, else your database secret
 
 document.getElementById('status').textContent = 'loading map...';
 
@@ -44,42 +42,14 @@ if (typeof L === 'undefined') {
 
   let marker = null;
   let polyline = L.polyline([], {color: '#2b7cff', weight: 4, smoothFactor: 1}).addTo(map);
-  let lastEntryId = null; // track which feeds we've already drawn, to avoid duplicate points
-  let glideTimer = null;
-  let isFirstFetch = true; // on page load, only place the marker - don't draw old history into the trail
 
-  // --- Predictive (dead-reckoning) state: keeps the marker moving between real GPS fixes ---
-  let lastFixPos = null;      // [lat, lng] at the moment of the last real fix
-  let lastFixTime = null;     // Date.now() at the moment of the last real fix
-  let lastFixSpeedKmh = 0;    // speed reported at the last real fix
-  let lastFixCourse = 0;      // course/heading reported at the last real fix
-  let predictTimer = null;
-
-  // Moves a lat/lng point forward by `distanceKm` along compass bearing `bearingDeg` (flat-earth approx, fine for short vehicle-tracking distances)
-  function projectPosition(lat, lng, bearingDeg, distanceKm) {
-    const bearingRad = bearingDeg * Math.PI / 180;
-    const dNorthKm = distanceKm * Math.cos(bearingRad);
-    const dEastKm = distanceKm * Math.sin(bearingRad);
-    const newLat = lat + (dNorthKm / 111.32);
-    const newLng = lng + (dEastKm / (111.32 * Math.cos(lat * Math.PI / 180)));
-    return [newLat, newLng];
-  }
-
-  // Runs continuously: estimates current position from the last real fix + elapsed time + speed/course
-  function predictLoop() {
-    if (lastFixPos && lastFixTime && lastFixSpeedKmh > 0.5) {
-      const elapsedHours = (Date.now() - lastFixTime) / 3600000;
-      const distanceKm = lastFixSpeedKmh * elapsedHours;
-      const predicted = projectPosition(lastFixPos[0], lastFixPos[1], lastFixCourse, distanceKm);
-
-      if (marker) {
-        marker.setLatLng(predicted);
-      } else {
-        marker = L.marker(predicted, {icon: makeIcon(lastFixCourse)}).addTo(map);
-      }
-    }
-    predictTimer = requestAnimationFrame(predictLoop);
-  }
+  // --- Predictive (dead-reckoning) state: keeps the marker gliding smoothly between real fixes ---
+  let lastFixPos = null;
+  let lastFixTime = null;
+  let lastFixSpeedKmh = 0;
+  let lastFixCourse = 0;
+  const MAX_PREDICT_SECONDS = 3;   // Arduino sends roughly every 3s, so don't extrapolate past that
+  const MAX_REASONABLE_KMH = 150;  // ignore obviously noisy/garbage speed readings
 
   function makeIcon(course) {
     return L.divIcon({
@@ -90,9 +60,30 @@ if (typeof L === 'undefined') {
     });
   }
 
-  // Called only when a REAL GPS fix arrives: snaps marker to the true position,
-  // and resets the prediction baseline so dead-reckoning continues from here.
-  function applyRealFix(newPos, course, speedKmh) {
+  // Moves a lat/lng point forward by distanceKm along compass bearing bearingDeg (flat-earth approx, fine for short distances)
+  function projectPosition(lat, lng, bearingDeg, distanceKm) {
+    const bearingRad = bearingDeg * Math.PI / 180;
+    const dNorthKm = distanceKm * Math.cos(bearingRad);
+    const dEastKm = distanceKm * Math.sin(bearingRad);
+    const newLat = lat + (dNorthKm / 111.32);
+    const newLng = lng + (dEastKm / (111.32 * Math.cos(lat * Math.PI / 180)));
+    return [newLat, newLng];
+  }
+
+  function predictLoop() {
+    if (lastFixPos && lastFixTime && lastFixSpeedKmh > 0.5 && lastFixSpeedKmh <= MAX_REASONABLE_KMH) {
+      const elapsedSeconds = Math.min((Date.now() - lastFixTime) / 1000, MAX_PREDICT_SECONDS);
+      const elapsedHours = elapsedSeconds / 3600;
+      const distanceKm = lastFixSpeedKmh * elapsedHours;
+      const predicted = projectPosition(lastFixPos[0], lastFixPos[1], lastFixCourse, distanceKm);
+      if (marker) marker.setLatLng(predicted);
+    }
+    requestAnimationFrame(predictLoop);
+  }
+
+  // Called for every real point coming from Firebase: snaps marker to the true position and,
+  // for anything after the initial history load, extends the trail.
+  function applyRealFix(newPos, course, speedKmh, addToTrail) {
     if (marker == null) {
       marker = L.marker(newPos, {icon: makeIcon(course)}).addTo(map);
       map.setView(newPos, 17);
@@ -100,77 +91,59 @@ if (typeof L === 'undefined') {
       marker.setLatLng(newPos);
       marker.setIcon(makeIcon(course));
     }
+    if (addToTrail) polyline.addLatLng(newPos);
     lastFixPos = newPos;
     lastFixTime = Date.now();
     lastFixSpeedKmh = isNaN(speedKmh) ? 0 : speedKmh;
     lastFixCourse = course;
   }
 
-  function updateGPS() {
-    let url = `https://api.thingspeak.com/channels/${CHANNEL_ID}/feeds.json?results=${RESULTS_PER_FETCH}`;
-    if (READ_API_KEY) url += `&api_key=${READ_API_KEY}`;
+  function handlePoint(val, isInitialBatch) {
+    if (!val) return;
+    const lat = parseFloat(val.lat);
+    const lng = parseFloat(val.lng);
+    const speed = parseFloat(val.speed);
+    const course = parseFloat(val.course) || 0;
+    if (isNaN(lat) || isNaN(lng)) return;
 
-    fetch(url)
-      .then(r => r.json())
-      .then(d => {
-        const feeds = d.feeds || [];
-        if (feeds.length === 0) { document.getElementById('status').textContent = 'no data yet'; return; }
-
-        // Only process feeds newer than the last one we already drew, in chronological order
-        let newFeeds = feeds;
-        if (lastEntryId !== null) {
-          newFeeds = feeds.filter(f => f.entry_id > lastEntryId);
-        }
-        if (newFeeds.length === 0) {
-          document.getElementById('status').textContent = 'up to date, waiting for next reading';
-          return;
-        }
-
-        let lastValidLatLng = null;
-        let lastValidCourse = 0;
-        let lastValidSpeed = null;
-        let lastValidTime = null;
-
-        newFeeds.forEach(feed => {
-          const lat = parseFloat(feed.field1);
-          const lng = parseFloat(feed.field2);
-          const speed = parseFloat(feed.field3);
-          const course = parseFloat(feed.field4) || 0;
-
-          if (!isNaN(lat) && !isNaN(lng)) {
-            if (!isFirstFetch) {
-              polyline.addLatLng([lat, lng]);
-            }
-            lastValidLatLng = [lat, lng];
-            lastValidCourse = course;
-            lastValidSpeed = speed;
-            lastValidTime = feed.created_at;
-          }
-          lastEntryId = feed.entry_id;
-        });
-
-        if (isFirstFetch && lastValidLatLng) {
-          // start the trail fresh from this session's first known position
-          polyline.addLatLng(lastValidLatLng);
-        }
-        isFirstFetch = false;
-
-        if (lastValidLatLng) {
-          applyRealFix(lastValidLatLng, lastValidCourse, lastValidSpeed);
-          document.getElementById('speed').textContent = isNaN(lastValidSpeed) ? '--' : lastValidSpeed.toFixed(1);
-          document.getElementById('status').textContent = 'last update: ' + new Date(lastValidTime).toLocaleTimeString();
-        } else {
-          document.getElementById('status').textContent = 'waiting for GPS fix';
-        }
-      })
-      .catch((err) => {
-        document.getElementById('status').textContent = 'connection error: ' + err.message;
-      });
+    applyRealFix([lat, lng], course, speed, !isInitialBatch);
+    document.getElementById('speed').textContent = isNaN(speed) ? '--' : speed.toFixed(1);
+    document.getElementById('status').textContent = 'live \u2022 ' + new Date().toLocaleTimeString();
   }
 
-  setInterval(updateGPS, POLL_INTERVAL_MS);
-  updateGPS();
-  predictLoop(); // start continuous dead-reckoning animation
+  // Streams the last 20 points on connect, then pushes every new point the instant it's written -
+  // no polling delay like the old ThingSpeak version.
+  const streamUrl = FIREBASE_URL + '/locations.json?orderBy="$key"&limitToLast=20' +
+                     (FIREBASE_AUTH ? '&auth=' + FIREBASE_AUTH : '');
+  const eventSource = new EventSource(streamUrl);
+
+  eventSource.addEventListener('put', (event) => {
+    try {
+      const parsed = JSON.parse(event.data);
+      const data = parsed.data;
+
+      if (parsed.path === '/') {
+        // Initial snapshot: the last 20 points, oldest to newest
+        if (data) {
+          const entries = Object.values(data).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+          entries.forEach((val) => handlePoint(val, true));
+        } else {
+          document.getElementById('status').textContent = 'no data yet';
+        }
+      } else {
+        // A single new point was just written
+        handlePoint(data, false);
+      }
+    } catch (e) {
+      document.getElementById('status').textContent = 'data error: ' + e.message;
+    }
+  });
+
+  eventSource.onerror = () => {
+    document.getElementById('status').textContent = 'connection lost, retrying...';
+  };
+
+  predictLoop(); // start continuous dead-reckoning animation between real fixes
 }
 </script>
 </body>
